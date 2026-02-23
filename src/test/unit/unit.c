@@ -12675,6 +12675,7 @@ START_TEST(test_queue_pop_wraparound) {
         uint8_t guard[4];
     } storage;
     uint8_t data[] = {9, 10, 11, 12};
+    uint8_t expected_guard[] = {0xEE, 0xEE, 0xEE, 0xEE};
     uint8_t out[4];
     int len;
     memset(&storage, 0, sizeof(storage));
@@ -12692,6 +12693,7 @@ START_TEST(test_queue_pop_wraparound) {
     ck_assert_int_eq(len, sizeof(out));
     ck_assert_mem_eq(out, data, sizeof(data));
     ck_assert_int_eq(queue_len(&q), 0);
+    ck_assert_mem_eq(storage.guard, expected_guard, sizeof(expected_guard));
 }
 END_TEST
 
