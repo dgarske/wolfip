@@ -148,6 +148,32 @@ Speed: 170096 ms, RX 0 bytes (~0 B/s), TX 23195968 bytes (~136369 B/s)
 > because wolfIP's TCP send window cycles: the device transmits until the remote
 > receive window fills, then waits for ACKs to reopen it before sending more.
 
+## Known Limitations
+
+### DHCP Subnet Mask Display
+
+wolfIP's internal DHCP client stores the subnet mask correctly in the stack, but `wolfIP_ipconfig_get()` returns the gateway address in the netmask slot on some DHCP server responses. Connectivity is unaffected (ARP, ping, TCP echo, and the throughput test all work correctly). Only the UART diagnostic print is wrong:
+
+```
+DHCP bound:
+  IP:   10.0.4.184
+  Mask: 10.0.4.1     ← displayed incorrectly; actual mask is 255.255.255.0
+  GW:   10.0.4.1
+```
+
+This is a wolfIP core issue, not a driver bug.
+
+### PHY Link Down at Startup
+
+If the Ethernet cable is not connected (or the switch is powering up) when the board boots, auto-negotiation will time out after 5 seconds and `va416xx_eth_init` reports:
+
+```
+  PHY link: DOWN
+  NOTE: PHY link down at startup (cable disconnected?) — continuing
+```
+
+The MAC and DMA are fully initialized and running. The device will respond to traffic once the link comes up — no reboot required.
+
 ## Architecture
 
 ### Ethernet Driver (`va416xx_eth.c`)
