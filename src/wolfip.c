@@ -3147,24 +3147,6 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 continue;
             }
 
-            /* Check if FIN */
-            if (tcp->flags & 0x01) {
-                if (t->sock.tcp.state == TCP_ESTABLISHED) {
-                    t->sock.tcp.state = TCP_CLOSE_WAIT;
-                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
-                    tcp_send_ack(t);
-                    t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
-                    (void)wolfIP_filter_notify_socket_event(
-                        WOLFIP_FILT_CLOSE_WAIT, S, t,
-                        t->local_ip, t->src_port, t->remote_ip, t->dst_port);
-                }
-                else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
-                    t->sock.tcp.state = TCP_CLOSING;
-                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
-                    tcp_send_ack(t);
-                    t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
-                }
-            }
             /* Check if SYN */
             if (tcp->flags & TCP_FLAG_SYN) {
                 if (t->sock.tcp.state == TCP_LISTEN) {
@@ -3232,18 +3214,24 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                 }
             }
-            /* Check if pure ACK to SYN-ACK */
-            if ((tcplen == 0) && (t->sock.tcp.state == TCP_SYN_RCVD)) {
-                if (tcp->flags == TCP_FLAG_ACK)  {
-                    t->sock.tcp.state = TCP_ESTABLISHED;
-                    tcp_ctrl_rto_stop(t);
-                    t->sock.tcp.ack = ee32(tcp->seq);
-                    t->sock.tcp.seq = ee32(tcp->ack);
-                    t->sock.tcp.snd_una = t->sock.tcp.seq;
-                    t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
-                    t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
-                    if (tx_has_writable_space(t))
-                        t->events |= CB_EVENT_WRITABLE;
+            /* Check if final ACK to SYN-ACK (may include payload) */
+            if (t->sock.tcp.state == TCP_SYN_RCVD) {
+                if (tcp->flags & TCP_FLAG_ACK)  {
+                    if (tcplen == 0 && tcp->flags != TCP_FLAG_ACK) {
+                        /* Ignore non-pure ACKs without payload in SYN_RCVD. */
+                    } else {
+                        t->sock.tcp.state = TCP_ESTABLISHED;
+                        tcp_ctrl_rto_stop(t);
+                        t->sock.tcp.ack = ee32(tcp->seq);
+                        t->sock.tcp.seq = ee32(tcp->ack);
+                        t->sock.tcp.snd_una = t->sock.tcp.seq;
+                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+                        t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
+                        if (tx_has_writable_space(t))
+                            t->events |= CB_EVENT_WRITABLE;
+                        if (tcplen > 0)
+                            tcp_recv(t, tcp);
+                    }
                 }
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
                 if (tcp->flags & TCP_FLAG_ACK) {
@@ -3255,28 +3243,48 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_2)) {
 
-                if (tcp->flags & 0x01) {
-                    /* FIN */
-                    if (t->sock.tcp.state == TCP_ESTABLISHED) {
-                        t->sock.tcp.state = TCP_CLOSE_WAIT;
-                        t->events &= ~CB_EVENT_READABLE;
-                    } else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
-                        t->sock.tcp.state = TCP_CLOSING;
-                    }
-                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
-                    t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
-                    tcp_send_ack(t);
-                }
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
                     tcp_process_ts(t, tcp, frame_len);
                 }
-                if (tcplen == 0)
-                    return;
-                if ((t->sock.tcp.state == TCP_LAST_ACK) || (t->sock.tcp.state == TCP_CLOSING) ||
-                    (t->sock.tcp.state == TCP_CLOSED))
-                    return;
-                tcp_recv(t, tcp);
+                if (tcplen > 0) {
+                    if ((t->sock.tcp.state == TCP_LAST_ACK) || (t->sock.tcp.state == TCP_CLOSING) ||
+                        (t->sock.tcp.state == TCP_CLOSED))
+                        return;
+                    tcp_recv(t, tcp);
+                }
+                if (tcp->flags & TCP_FLAG_FIN) {
+                    uint32_t seq = ee32(tcp->seq);
+                    uint32_t fin_seq_end = tcp_seq_inc(seq, tcplen);
+                    int accept_fin = 1;
+
+                    if ((tcplen == 0 && t->sock.tcp.ack != seq) ||
+                        (tcplen > 0 && t->sock.tcp.ack != fin_seq_end)) {
+                        accept_fin = 0;
+                    }
+                    if (accept_fin) {
+                        if (t->sock.tcp.state == TCP_ESTABLISHED) {
+                            t->sock.tcp.state = TCP_CLOSE_WAIT;
+                            t->events &= ~CB_EVENT_READABLE;
+                            (void)wolfIP_filter_notify_socket_event(
+                                WOLFIP_FILT_CLOSE_WAIT, S, t,
+                                t->local_ip, t->src_port, t->remote_ip, t->dst_port);
+                        } else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
+                            t->sock.tcp.state = TCP_CLOSING;
+                        } else if (t->sock.tcp.state == TCP_FIN_WAIT_2) {
+                            t->sock.tcp.state = TCP_TIME_WAIT;
+                        }
+                        if (tcplen > 0) {
+                            t->sock.tcp.ack = tcp_seq_inc(fin_seq_end, 1);
+                        } else {
+                            t->sock.tcp.ack = tcp_seq_inc(seq, 1);
+                        }
+                        t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
+                        tcp_send_ack(t);
+                    } else {
+                        tcp_send_ack(t);
+                    }
+                }
             }
         }
     }
