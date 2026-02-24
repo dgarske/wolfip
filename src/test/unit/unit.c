@@ -7379,6 +7379,7 @@ START_TEST(test_dhcp_parse_offer_truncated_option_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
     opt->len = 4;
