@@ -32,7 +32,7 @@
 #include "va416xx_hal_uart.h"
 
 extern uint32_t _ebss;
-extern uint32_t _estack;
+extern uint32_t _sdma_bss; /* start of .dma_bss: hard upper limit for heap */
 
 static char *heap_end;
 
@@ -89,7 +89,7 @@ void *_sbrk(ptrdiff_t incr)
         heap_end = (char *)&_ebss;
     }
     prev = heap_end;
-    if ((heap_end + incr) >= (char *)&_estack) {
+    if ((heap_end + incr) >= (char *)&_sdma_bss) {
         errno = ENOMEM;
         return (void *)-1;
     }
