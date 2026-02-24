@@ -359,7 +359,14 @@ int main(void)
     printf("Initializing Ethernet...\n");
     ll = wolfIP_getdev(IPStack);
     ret = va416xx_eth_init(ll, NULL);
-    if (ret < 0) {
+    if (ret == -2) {
+        /* PHY link was down when auto-negotiation timed out.  MAC/DMA
+         * are fully initialized and running; the device will respond
+         * to traffic once the link comes up (e.g. cable or switch
+         * powered on after the board). */
+        printf("  NOTE: PHY link down at startup (cable disconnected?)"
+               " — continuing\n");
+    } else if (ret < 0) {
         printf("  ERROR: va416xx_eth_init failed (%d)\n", ret);
     }
 
@@ -600,8 +607,14 @@ int main(void)
                    (unsigned)((bmcr >> 8) & 1));
         }
 
+#ifdef DEBUG_ETH
         /* === GPIO Pin Activity Scan ===
-         * Identify which ETH pins carry PHY-driven clocks (TXCLK, RXCLK).
+         * One-time bring-up tool: identifies which ETH pins carry PHY-driven
+         * clocks (TXCLK, RXCLK) by briefly sampling them as GPIO inputs.
+         * Hardware is now characterized (TXCLK=PB02, RXCLK=PA15 at 2.5 MHz
+         * for 10M; FES read-only=0 confirmed), so this section is only
+         * compiled in with DEBUG_ETH to keep TX_SELFTEST UART output concise.
+         *
          * Each pin is briefly switched to GPIO input (funsel=0), sampled
          * 64 times in a tight loop (~2µs at 100MHz), then restored to
          * funsel=1.  At 2.5MHz TXCLK (10Mbps), 64 samples span ~5 clock
@@ -645,7 +658,9 @@ int main(void)
         /* === FES=1 TX Attempt ===
          * If PHY negotiated 100M (TXCLK=25MHz) but MAC has FES=0 (expects
          * 2.5MHz), the TX clock domain is mismatched.  Try forcing FES=1
-         * (100M) and see if a frame exits the MAC (TXFRAMECOUNT_GB delta). */
+         * (100M) and see if a frame exits the MAC (TXFRAMECOUNT_GB delta).
+         * Result: FES is confirmed read-only=0 on this silicon; MAC always
+         * runs at 10M.  Gated under DEBUG_ETH as silicon is characterized. */
         {
             uint32_t hw_tx_before = 0, hw_tx_after = 0;
             uint32_t cfg_save;
@@ -666,6 +681,7 @@ int main(void)
             VOR_ETH->MAC_CONFIG = cfg_save;  /* restore original speed */
             __DSB();
         }
+#endif /* DEBUG_ETH */
     }
 #endif /* TX_SELFTEST */
 
