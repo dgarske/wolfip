@@ -3214,18 +3214,24 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                 }
             }
-            /* Check if pure ACK to SYN-ACK */
-            if ((tcplen == 0) && (t->sock.tcp.state == TCP_SYN_RCVD)) {
-                if (tcp->flags == TCP_FLAG_ACK)  {
-                    t->sock.tcp.state = TCP_ESTABLISHED;
-                    tcp_ctrl_rto_stop(t);
-                    t->sock.tcp.ack = ee32(tcp->seq);
-                    t->sock.tcp.seq = ee32(tcp->ack);
-                    t->sock.tcp.snd_una = t->sock.tcp.seq;
-                    t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
-                    t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
-                    if (tx_has_writable_space(t))
-                        t->events |= CB_EVENT_WRITABLE;
+            /* Check if final ACK to SYN-ACK (may include payload) */
+            if (t->sock.tcp.state == TCP_SYN_RCVD) {
+                if (tcp->flags & TCP_FLAG_ACK)  {
+                    if (tcplen == 0 && tcp->flags != TCP_FLAG_ACK) {
+                        /* Ignore non-pure ACKs without payload in SYN_RCVD. */
+                    } else {
+                        t->sock.tcp.state = TCP_ESTABLISHED;
+                        tcp_ctrl_rto_stop(t);
+                        t->sock.tcp.ack = ee32(tcp->seq);
+                        t->sock.tcp.seq = ee32(tcp->ack);
+                        t->sock.tcp.snd_una = t->sock.tcp.seq;
+                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+                        t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
+                        if (tx_has_writable_space(t))
+                            t->events |= CB_EVENT_WRITABLE;
+                        if (tcplen > 0)
+                            tcp_recv(t, tcp);
+                    }
                 }
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
                 if (tcp->flags & TCP_FLAG_ACK) {
