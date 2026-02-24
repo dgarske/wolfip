@@ -5068,12 +5068,15 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
         return;
 
     if (arp->opcode == ee16(ARP_REQUEST) && arp->tip == ee32(conf->ip)) {
+        uint32_t sender_ip = arp->sip;
+        uint8_t sender_mac[6];
+        memcpy(sender_mac, arp->sma, 6);
         arp->opcode = ee16(ARP_REPLY);
         memcpy(arp->tma, arp->sma, 6);
         memcpy(arp->sma, ll->mac, 6);
         arp->tip = arp->sip;
         arp->sip = ee32(conf->ip);
-        arp_store_neighbor(s, if_idx, ee32(arp->sip), arp->sma);
+        arp_store_neighbor(s, if_idx, ee32(sender_ip), sender_mac);
         eth_output_add_header(s, if_idx, arp->tma, &arp->eth, ETH_TYPE_ARP);
         if (ll->send) {
             if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &arp->eth, len) != 0)
