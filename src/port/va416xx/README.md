@@ -230,7 +230,7 @@ All DMA descriptors and buffers are placed in `.dma_bss` (RAM1, 0x20000000+). Th
 | `ivt.c` | Interrupt vector table (16 system + 64 external IRQs) |
 | `syscalls.c` | Newlib stubs (`_write` routes to UART0) |
 | `target.ld` | Linker script (Flash 256 KB, RAM 64 KB, `.dma_bss` in RAM1) |
-| `hal_config.h` | SDK HAL configuration (SysTick 10 ms tick) |
+| `hal_config.h` | SDK HAL configuration (`SYSTICK_INTERVAL_MS=1`, 1 ms SysTick tick) |
 | `board.h` | Board selection (includes PEB1 EVK header) |
 | `Makefile` | Build system with SDK integration |
 

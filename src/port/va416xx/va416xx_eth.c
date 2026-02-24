@@ -183,8 +183,15 @@ static void eth_config_mac(const uint8_t *mac)
                           ETH_MAC_CONFIG_ACS_Msk |
                           ETH_MAC_CONFIG_IPC_Msk;
 
-    /* Frame filter: promiscuous for initial bring-up */
+    /* Frame filter.
+     * PR=0: perfect DA filtering — accepts unicast to our MAC + broadcast.
+     * DBF=0: broadcast NOT disabled, so DHCP (broadcast) and ARP work.
+     * In DEBUG_ETH builds, enable promiscuous to capture all traffic. */
+#ifdef DEBUG_ETH
     VOR_ETH->MAC_FRAME_FLTR = ETH_MAC_FRAME_FLTR_PR_Msk;
+#else
+    VOR_ETH->MAC_FRAME_FLTR = 0U;
+#endif
 }
 
 /* ========================================================================= */
@@ -439,7 +446,6 @@ static int eth_phy_init(void)
 {
     uint16_t phy_status;
     uint16_t phy_id_hi;
-    uint32_t timeout;
 
     /* Set GMII clock divider in MAC_GMII_ADDR.CR field
      * PEB1 EVK: 40MHz crystal * PLL 2.5x = 100MHz -> DIV42 (60-100MHz)
@@ -466,24 +472,24 @@ static int eth_phy_init(void)
     /* Reset PHY */
     HAL_ResetPHY();
 
-    /* Wait for PHY reset to complete.
-     * KSZ8041TL datasheet: reset completes in ~100-300 ms.
-     * Previous wait of 100K cycles (~1 ms) was far too short — the PHY
-     * was still resetting when we started configuring it, so the AN
-     * advertisement write was likely lost.
-     * 50M iterations at 100 MHz ≈ 500 ms — conservative but safe. */
-    ETH_DEBUG("  PHY: waiting for reset (~500ms)...\n");
-    for (volatile uint32_t i = 0; i < 50000000U; i++) { }
-
-    /* Verify PHY reset completed: bit 15 (RESET) in BMCR should auto-clear */
+    /* Wait for PHY reset to complete by polling BMCR bit 15 (RESET).
+     * KSZ8041TL datasheet: reset completes in 100-300 ms.  Hard deadline
+     * of 500 ms as a safety net.  Using HAL_time_ms for real wall-clock
+     * timing rather than cycle counting (which is sensitive to -Os inlining
+     * and actual loop overhead). */
+    ETH_DEBUG("  PHY: waiting for reset (max 500ms)...\n");
     {
         uint16_t cr;
-        HAL_ReadPhyReg(PHY_CONTROL_REG, &cr);
-        mdio_settle();
-        HAL_ReadPhyReg(PHY_CONTROL_REG, &cr);
-        mdio_settle();
-        ETH_DEBUG("  PHY BMCR after reset: 0x%04X (bit15=%u)\n",
-                  cr, (unsigned)((cr >> 15) & 1));
+        uint64_t deadline = HAL_time_ms + 500U;
+        do {
+            HAL_ReadPhyReg(PHY_CONTROL_REG, &cr);
+            mdio_settle();
+            HAL_ReadPhyReg(PHY_CONTROL_REG, &cr); /* double-read */
+            mdio_settle();
+        } while ((cr & (1U << 15)) && (HAL_time_ms < deadline));
+        ETH_DEBUG("  PHY BMCR after reset: 0x%04X (bit15=%u, t=%lums)\n",
+                  cr, (unsigned)((cr >> 15) & 1),
+                  (unsigned long)(HAL_time_ms - (deadline - 500U)));
     }
 
     /* Configure Auto-Negotiation advertisement.
@@ -548,19 +554,19 @@ static int eth_phy_init(void)
     }
     ETH_DEBUG("  PHY AN: enabled, restart issued\n");
 
-    /* Wait for link up.
-     *
-     * With MDIO settling delays (~50 µs each), each loop iteration now
-     * takes real wall time.  With double-read + 2x settle = ~100 µs per
-     * iteration, 50K iterations ≈ 5 seconds — enough for AN to complete
-     * (typically 1-2 seconds). */
-    timeout = 50000U;
-    do {
-        HAL_ReadPhyReg(PHY_STATUS_REG, &phy_status);
-        mdio_settle();
-        HAL_ReadPhyReg(PHY_STATUS_REG, &phy_status); /* double-read: latch */
-        mdio_settle();
-    } while (!(phy_status & MIISTATUS_PHY_LINK) && --timeout);
+    /* Wait for link up, 5-second deadline.
+     * BMSR is a latch-on-read register for some bits (link loss latches
+     * until read), so we double-read: first read clears the latch, second
+     * read returns the current state. */
+    {
+        uint64_t an_deadline = HAL_time_ms + 5000U;
+        do {
+            HAL_ReadPhyReg(PHY_STATUS_REG, &phy_status);
+            mdio_settle();
+            HAL_ReadPhyReg(PHY_STATUS_REG, &phy_status); /* double-read: latch */
+            mdio_settle();
+        } while (!(phy_status & MIISTATUS_PHY_LINK) && (HAL_time_ms < an_deadline));
+    }
 
     printf("  PHY link: %s\n",
            (phy_status & MIISTATUS_PHY_LINK) ? "UP" : "DOWN");

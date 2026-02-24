@@ -35,10 +35,10 @@
 #include "va416xx_hal_clkgen.h"
 #include "board.h"
 
-/* HAL_time_ms: millisecond tick counter maintained by SysTick ISR (10ms
- * resolution by default).  Used as the wolfIP `now` parameter so that all
- * stack timers (DHCP, ARP, TCP retransmit, etc.) run in real wall-clock
- * time rather than depending on CPU loop speed. */
+/* HAL_time_ms: millisecond tick counter maintained by SysTick ISR (1ms
+ * resolution; SYSTICK_INTERVAL_MS=1 in hal_config.h).  Used as the wolfIP
+ * `now` parameter so that all stack timers (DHCP, ARP, TCP retransmit, etc.)
+ * run in real wall-clock time rather than depending on CPU loop speed. */
 extern volatile uint64_t HAL_time_ms;
 
 #define RX_BUF_SIZE     1024
@@ -84,7 +84,18 @@ static int client_fd = -1;
 
 uint32_t wolfIP_getrandom(void)
 {
-    static uint32_t lfsr = 0x1A2B3C4DU;
+    static uint32_t lfsr;
+    static int seeded = 0;
+
+    if (!seeded) {
+        /* Seed from boot time so ISNs and ephemeral ports vary per power-up.
+         * HAL_time_ms at first wolfIP call is typically 1-5 s into boot.
+         * Note: not cryptographically secure; suitable for embedded demo use. */
+        lfsr = (uint32_t)HAL_time_ms;
+        if (lfsr == 0U)
+            lfsr = 0x1A2B3C4DU;  /* LFSR must never be zero */
+        seeded = 1;
+    }
     lfsr ^= lfsr << 13;
     lfsr ^= lfsr >> 17;
     lfsr ^= lfsr << 5;
@@ -601,14 +612,14 @@ int main(void)
             uint32_t pin, i, ones, zeros;
             /* PORTA[8:15] */
             for (pin = 8; pin <= 15; pin++) {
-                HAL_Iocfg_PinMux(PORTA, pin, 0);
-                PORTA->DIR &= ~(1U << pin);
+                HAL_Iocfg_PinMux(VOR_PORTA, pin, 0);
+                VOR_PORTA->DIR &= ~(1U << pin);
                 { volatile uint32_t _s; for (_s = 0; _s < 20U; _s++) {} }
                 ones = 0; zeros = 0;
                 for (i = 0; i < 64U; i++) {
-                    if (PORTA->DATAIN & (1U << pin)) ones++; else zeros++;
+                    if (VOR_PORTA->DATAIN & (1U << pin)) ones++; else zeros++;
                 }
-                HAL_Iocfg_PinMux(PORTA, pin, 1);
+                HAL_Iocfg_PinMux(VOR_PORTA, pin, 1);
                 { volatile uint32_t _s; for (_s = 0; _s < 20U; _s++) {} }
                 printf("    PA%02lu: hi=%02lu lo=%02lu%s\n",
                        (unsigned long)pin, (unsigned long)ones, (unsigned long)zeros,
@@ -616,14 +627,14 @@ int main(void)
             }
             /* PORTB[0:10] */
             for (pin = 0; pin <= 10; pin++) {
-                HAL_Iocfg_PinMux(PORTB, pin, 0);
-                PORTB->DIR &= ~(1U << pin);
+                HAL_Iocfg_PinMux(VOR_PORTB, pin, 0);
+                VOR_PORTB->DIR &= ~(1U << pin);
                 { volatile uint32_t _s; for (_s = 0; _s < 20U; _s++) {} }
                 ones = 0; zeros = 0;
                 for (i = 0; i < 64U; i++) {
-                    if (PORTB->DATAIN & (1U << pin)) ones++; else zeros++;
+                    if (VOR_PORTB->DATAIN & (1U << pin)) ones++; else zeros++;
                 }
-                HAL_Iocfg_PinMux(PORTB, pin, 1);
+                HAL_Iocfg_PinMux(VOR_PORTB, pin, 1);
                 { volatile uint32_t _s; for (_s = 0; _s < 20U; _s++) {} }
                 printf("    PB%02lu: hi=%02lu lo=%02lu%s\n",
                        (unsigned long)pin, (unsigned long)ones, (unsigned long)zeros,
@@ -658,7 +669,7 @@ int main(void)
     }
 #endif /* TX_SELFTEST */
 
-    /* 10. Main loop — use HAL_time_ms (SysTick-based, 10ms resolution)
+    /* 10. Main loop — use HAL_time_ms (SysTick-based, 1ms resolution)
      * so wolfIP timers (TCP, ARP, etc.) run in real wall-clock time. */
     {
         uint64_t last_led_ms = 0;
