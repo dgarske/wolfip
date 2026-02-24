@@ -14337,7 +14337,7 @@ START_TEST(test_arp_request_handling) {
     uint32_t req_ip = 0xC0A80002; // 192.168.0.2
     uint32_t device_ip = 0xC0A80001; // 192.168.0.1
     uint8_t req_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    //uint8_t mac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    uint8_t mac[6] = {0};
     struct wolfIP s;
 
     memset(&arp_req, 0, sizeof(arp_req));
@@ -14358,9 +14358,8 @@ START_TEST(test_arp_request_handling) {
     wolfIP_poll(&s, 1002);
 
     /* Check if ARP table updated with requester's MAC and IP */
-    /* TODO */
-    //ck_assert_int_eq(arp_lookup(&s, req_ip, mac), 0);
-    //ck_assert_mem_eq(mac, req_mac, 6);
+    ck_assert_int_eq(arp_lookup(&s, TEST_PRIMARY_IF, req_ip, mac), 0);
+    ck_assert_mem_eq(mac, req_mac, 6);
 
     /* Check if an ARP reply was generated */
     arp_reply = (struct arp_packet *)last_frame_sent;
