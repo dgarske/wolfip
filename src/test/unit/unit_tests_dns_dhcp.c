@@ -1114,7 +1114,9 @@ START_TEST(test_sock_sendto_more_error_paths)
     int udp_sd;
     int icmp_sd;
     struct tsocket *ts;
-    struct wolfIP_sockaddr_in sin;
+    /* Zero-initialized: this error-path test passes &sin into sendto without
+     * filling it, which newer clang flags under -Wuninitialized-const-pointer. */
+    struct wolfIP_sockaddr_in sin = {0};
     uint8_t buf[64];
     uint8_t tiny[128];
     uint8_t tiny_udp[32];
