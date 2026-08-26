@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include "macsec_secy.h"
+#include "macsec_sa.h"
 
 static const uint8_t FZ_SAK[16] = {
     0xad,0x7a,0x2b,0xd0,0x3e,0xac,0x83,0x5a,
@@ -40,6 +41,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     struct macsec_sectag          tag;
     struct macsec_validate_params vp;
+    struct macsec_rx_sc           rx;
     uint8_t out[2048];
     size_t  out_len;
     size_t  i;
@@ -63,5 +65,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         (void)macsec_validate(&vp, data, size, out, sizeof(out), &out_len,
                               &tag);
     }
+
+    /* Stateful receive path on top: the SecTAG demux (SCI match, AN lookup)
+     * and the per-SA replay window run before and after the transform, so
+     * they need the same coverage as the parser. Two Secure Associations are
+     * installed so the AN lookup has both a hit and a miss to find. */
+    macsec_rx_sc_init(&rx);
+    (void)macsec_rx_sc_set_key(&rx, FZ_SAK, sizeof(FZ_SAK), FZ_SCI, 0,
+                               1 /* replay_protect */, 4 /* window */, 0);
+    (void)macsec_rx_sc_set_key(&rx, FZ_SAK, sizeof(FZ_SAK), FZ_SCI, 1,
+                               1, 4, 0);
+    out_len = 0;
+    (void)macsec_rx(&rx, data, size, out, sizeof(out), &out_len);
     return 0;
 }

@@ -148,25 +148,68 @@ static void hexenc(char *out, const uint8_t *b, size_t n)
     out[2 * n] = '\0';
 }
 
+/* A Secure Channel holds one Secure Association per Association Number so a
+ * rekey can run make-before-break; the key to program into the kernel is the
+ * one currently protecting traffic. */
+static const struct macsec_tx_sa *tx_active_sa(const struct macsec_tx_sc *sc)
+{
+    size_t i;
+
+    if (!sc->active) {
+        return NULL;
+    }
+    for (i = 0; i < (size_t)MACSEC_SA_PER_SC; i++) {
+        if (sc->sa[i].in_use && sc->sa[i].an == sc->active_an) {
+            return &sc->sa[i];
+        }
+    }
+    return NULL;
+}
+
+/* The receive SA for the same key: MKA installs both directions of a key
+ * under one Association Number. */
+static const struct macsec_rx_sa *rx_sa_for(const struct macsec_rx_sc *sc,
+                                            uint8_t an)
+{
+    size_t i;
+
+    for (i = 0; i < (size_t)MACSEC_SA_PER_SC; i++) {
+        if (sc->sa[i].in_use && sc->sa[i].an == an) {
+            return &sc->sa[i];
+        }
+    }
+    return NULL;
+}
+
 static void backend_program_kernel(const char *dev)
 {
     char cmd[600], txsak[65], rxsak[65], rxsci[17];
+    const struct macsec_tx_sa *tsa;
+    const struct macsec_rx_sa *rsa;
+
     if (!iface_name_ok(dev)) {
         fprintf(stderr, "refusing unsafe MACSEC_KERNEL_DEV '%s'\n",
                 dev != NULL ? dev : "(null)");
         return;
     }
-    hexenc(txsak, g_tx.sak, g_tx.sak_len);
-    hexenc(rxsak, g_rx.sak, g_rx.sak_len);
+    tsa = tx_active_sa(&g_tx);
+    rsa = (tsa != NULL) ? rx_sa_for(&g_rx, tsa->an) : NULL;
+    if (tsa == NULL || rsa == NULL) {
+        fprintf(stderr, "no Secure Association in force yet\n");
+        return;
+    }
+    hexenc(txsak, tsa->sak, tsa->sak_len);
+    hexenc(rxsak, rsa->sak, rsa->sak_len);
     hexenc(rxsci, g_rx.sci, 8);
     snprintf(cmd, sizeof cmd,
-             "ip macsec add %s tx sa %u pn 1 on key 01 %s", dev, g_tx.an, txsak);
+             "ip macsec add %s tx sa %u pn 1 on key 01 %s", dev, tsa->an,
+             txsak);
     run_ip(cmd);
     snprintf(cmd, sizeof cmd, "ip macsec add %s rx sci %s on", dev, rxsci);
     run_ip(cmd);
     snprintf(cmd, sizeof cmd,
              "ip macsec add %s rx sci %s sa %u pn 1 on key 02 %s",
-             dev, rxsci, g_rx.an, rxsak);
+             dev, rxsci, rsa->an, rxsak);
     run_ip(cmd);
     printf("MACSEC-UP dev=%s\n", dev);
     fflush(stdout);
@@ -176,8 +219,8 @@ static int backend_init(const uint8_t *cak, size_t cak_len,
                         const uint8_t *ckn, size_t ckn_len,
                         const uint8_t sci[8], uint8_t prio)
 {
-    memset(&g_tx, 0, sizeof(g_tx));
-    memset(&g_rx, 0, sizeof(g_rx));
+    macsec_tx_sc_init(&g_tx);
+    macsec_rx_sc_init(&g_rx);
     return mka_wolfmka_init_psk(&g_m, cb_send, NULL, cak, cak_len, ckn, ckn_len,
                                 sci, prio, 1 /* key_server_capable */,
                                 16 /* GCM-AES-128 */, &g_tx, &g_rx);
@@ -187,7 +230,13 @@ static void backend_rx(const uint8_t *f, size_t n, uint64_t t)
 static void backend_tick(uint64_t t) { (void)mka_wolfmka_tick(&g_m, (uint32_t)t); }
 static int  backend_installed(void) { return mka_wolfmka_installed(&g_m); }
 static void backend_report(void)
-{ print_sak(g_tx.sak_len, g_tx.an, g_tx.sak, g_tx.sci); }
+{
+    const struct macsec_tx_sa *tsa = tx_active_sa(&g_tx);
+
+    if (tsa != NULL) {
+        print_sak(tsa->sak_len, tsa->an, tsa->sak, g_tx.sci);
+    }
+}
 static void backend_free(void) { mka_wolfmka_free(&g_m); }
 
 static void pump(uint8_t *buf, size_t cap)

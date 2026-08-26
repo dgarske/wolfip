@@ -37,6 +37,11 @@ env:
   # Build the whole suite with MACsec/MKA on so every object is compiled once
   # with a consistent flag set (CMAC/GCM/AES-key-wrap come from --enable-all).
   WOLFIP_ENABLE_MACSEC: 1
+  # The MKA control plane comes from the wolfDen wolfMKA library, consumed
+  # from a clone rather than a submodule. Set here so every `make` in the job
+  # builds the adapter and its unit test alongside everything else, instead of
+  # a second pass with a different flag set.
+  WOLFMKA_DIR: ${{ github.workspace }}/../wolfDen/mka/wolfMKA
 
 jobs:
   supplicant:
@@ -87,9 +92,14 @@ jobs:
       # against the cached wolfSSL (no sudo install needed; rpath is absolute
       # so the binaries resolve the lib even under sudo).
 
+      # wolfMKA (GPL, public) provides the MKA state machine. Cloned before
+      # the first build so WOLFMKA_DIR resolves and the adapter is compiled.
+      - name: Clone wolfDen (wolfMKA)
+        run: git clone --depth 1 https://github.com/wolfSSL/wolfDen ../wolfDen
+
       # Hard gate: in-process unit tests (no root / no radio). With
-      # WOLFIP_ENABLE_MACSEC=1 in env this also builds and runs the MACsec/MKA
-      # crypto, SecY, SA and protocol tests.
+      # WOLFIP_ENABLE_MACSEC=1 and WOLFMKA_DIR in env this also builds and
+      # runs the MACsec/MKA crypto, SecY, SA, adapter and protocol tests.
       - name: Supplicant + MACsec unit tests
         run: make supplicant-tests
 
@@ -179,10 +189,20 @@ jobs:
         if: steps.macsec.outputs.available == 'yes'
         run: sudo bash tools/macsec/run_macsec_static_test.sh
 
-      # NOTE: MKA control-plane interop (run_macsec_mka_test.sh /
-      # run_macsec_mka_dataplane_test.sh) needs the wolfDen wolfMKA library
-      # (WOLFMKA_DIR) with the L2-ICV interop fix (wolfSSL/wolfDen PR #2); it
-      # returns to CI once that library is available upstream.
+      # Best-effort: the control-plane interop against wpa_supplicant needs
+      # both the kernel macsec module and wpa_supplicant, neither guaranteed
+      # on a hosted runner. The adapter itself is already covered by the
+      # unit-test gate above.
+      - name: MACsec MKA control-plane interop vs wpa_supplicant
+        if: steps.macsec.outputs.available == 'yes'
+        run: |
+          if ! command -v wpa_supplicant >/dev/null; then
+            echo "::warning::wpa_supplicant unavailable; skipping MKA interop"
+            exit 0
+          fi
+          make build/macsec-sta
+          sudo bash tools/macsec/run_macsec_mka_test.sh
+          sudo bash tools/macsec/run_macsec_mka_dataplane_test.sh
 
       # Hard gate: the in-process unit tests rebuilt with AddressSanitizer +
       # UBSan, to catch memory / undefined-behaviour bugs in the parsers.

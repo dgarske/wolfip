@@ -50,15 +50,12 @@
 
 /* MACsec / MKA (IEEE 802.1AE + 802.1X-2010) needs AES-CMAC for the KDF and
  * MKPDU ICV, AES-GCM for the SecY data plane, and RFC 3394 AES key wrap for
- * the SAK. */
-#if defined(WOLFIP_ENABLE_MACSEC) && WOLFIP_ENABLE_MACSEC
-#if !defined(WOLFSSL_CMAC) || !defined(HAVE_AESGCM) \
-    || !defined(HAVE_AES_KEYWRAP)
-#warning "wolfIP MACsec disabled (needs WOLFSSL_CMAC + HAVE_AESGCM + HAVE_AES_KEYWRAP)"
-#undef  WOLFIP_ENABLE_MACSEC
-#define WOLFIP_ENABLE_MACSEC 0
-#endif
-#endif
+ * the SAK. There is deliberately no graceful auto-disable here, unlike the
+ * blocks above: MACsec is opt-in (WOLFIP_ENABLE_MACSEC defaults to 0) and the
+ * Makefile compiles its sources unconditionally once it is asked for, so a
+ * missing wolfCrypt dependency is a hard #error in macsec_crypto.c /
+ * macsec_secy.c naming the ./configure flag, not a silent feature drop. The
+ * key-wrap requirement is already covered by the baseline #error below. */
 
 /* WPA2-PSK is the unconditional baseline and cannot be turned off: the
  * 4-way handshake needs AES (CCMP / key-wrap / CMAC), HMAC, SHA-1,

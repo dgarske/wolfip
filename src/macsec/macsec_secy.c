@@ -30,10 +30,8 @@
 #include <wolfssl/wolfcrypt/aes.h>
 
 #ifndef HAVE_AESGCM
-#error "wolfIP MACsec SecY requires wolfSSL built with HAVE_AESGCM (--enable-aesgcm)"
+#error "wolfIP MACsec SecY requires wolfSSL built with HAVE_AESGCM (./configure --enable-aesgcm)"
 #endif
-
-#define MACSEC_ETH_ADDR_PAIR_LEN  12U   /* DA(6) + SA(6)                     */
 
 /* conf_offset is limited to the 802.1AE-permitted values. */
 static int macsec_offset_valid(size_t off)
@@ -279,8 +277,25 @@ int macsec_validate(const struct macsec_validate_params *p,
     if (frame_len < hdr_len + MACSEC_ICV_LEN) {
         return BAD_FUNC_ARG;
     }
-    sd_len = frame_len - hdr_len - MACSEC_ICV_LEN;
-    icv    = frame + hdr_len + sd_len;
+    /* Secure Data length: the SecTAG's SL field when set, else whatever is
+     * left of the frame. SL exists because the MAC pads a short frame to the
+     * 60-octet Ethernet minimum *after* the ICV; deriving the length from
+     * frame_len alone would count that padding as Secure Data and look for
+     * the ICV past its real position, so every short frame would fail to
+     * authenticate. SL is inside the AAD, so a tampered one fails the ICV. */
+    if (tag.sl != 0U) {
+        if (tag.sl >= MACSEC_MIN_SECURE_DATA) {
+            return BAD_FUNC_ARG;    /* SL is 0 whenever Secure Data >= 48 */
+        }
+        sd_len = (size_t)tag.sl;
+        if (frame_len < hdr_len + sd_len + MACSEC_ICV_LEN) {
+            return BAD_FUNC_ARG;
+        }
+    }
+    else {
+        sd_len = frame_len - hdr_len - MACSEC_ICV_LEN;
+    }
+    icv = frame + hdr_len + sd_len;
 
     /* Nonce SCI: the SecTAG's if present, otherwise the SC's configured SCI. */
     if (tag.sci_present) {
@@ -329,9 +344,11 @@ int macsec_validate(const struct macsec_validate_params *p,
     wc_AesFree(&aes);
     wpa_secure_zero(nonce, sizeof(nonce));
     if (ret != 0) {
-        /* ICV mismatch (AES_GCM_AUTH_E) or crypto error: scrub output. */
         wpa_secure_zero(out_payload, sd_len);
-        return -1;
+        /* Report a forged frame and a failing crypto backend differently: an
+         * MKA-driven caller counts the first against the peer and may tear
+         * the Connectivity Association down over it. */
+        return (ret == AES_GCM_AUTH_E) ? MACSEC_ICV_FAIL : ret;
     }
 
     *out_payload_len = sd_len;

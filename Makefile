@@ -372,7 +372,7 @@ WOLFIP_HAVE_WOLFMKA := 1
 SUPPLICANT_SRC += src/macsec/mka_wolfmka.c
 # WOLFMKA_ICV_L2_ADDR makes wolfMKA include the L2 addresses (DA||SA||EtherType)
 # in the MKA ICV, matching wpa_supplicant / the Linux kernel (802.1X-2010
-# 11.11.3); required to interoperate with them (wolfSSL/wolfDen PR #2).
+# 11.11.3); required to interoperate with them. Available in wolfDen main.
 CFLAGS += -DWOLFIP_MKA_WOLFMKA=1 -DWOLFMKA_ICV_L2_ADDR -I$(WOLFMKA_DIR)/include
 # wolfMKA library objects live outside src/, compiled to build/wolfmka/.
 WOLFMKA_OBJ := build/wolfmka/mka_crypto.o build/wolfmka/mka_kay.o \
@@ -402,10 +402,18 @@ build/macsec/%.o: src/macsec/%.c
 	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) -MMD -MP -Isrc/supplicant -Isrc/macsec -c $< -o $@
 
 # wolfMKA library sources from the local clone ($(WOLFMKA_DIR)/src).
+# wolfMKA is an external library, not wolfIP source, so wolfIP's own style
+# gates do not apply to it: -Wdeclaration-after-statement is dropped here (the
+# library targets C99) rather than patching a tree we do not own. Correctness
+# warnings (-Wall -Wextra -Werror) still apply. -MMD -MP so a wolfMKA header
+# edit rebuilds the objects that include it.
+WOLFMKA_CFLAGS = $(filter-out -Wdeclaration-after-statement,$(CFLAGS))
+
 build/wolfmka/%.o: $(WOLFMKA_DIR)/src/%.c
 	@mkdir -p build/wolfmka || true
 	@echo "[CC] $<"
-	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) -I$(WOLFMKA_DIR)/include -c $< -o $@
+	@$(CC) $(WOLFMKA_CFLAGS) $(WOLFSSL_CFLAGS) -MMD -MP \
+		-I$(WOLFMKA_DIR)/include -c $< -o $@
 
 # WOLFSSL_LIBS / WOLFSSL_CFLAGS may already be set above when
 # WOLFSSL_PREFIX is provided. Otherwise default to pkg-config detection
@@ -433,6 +441,12 @@ build/test-macsec-secy: $(SUPPLICANT_OBJ) build/macsec/test_macsec_secy.o
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
 
 build/test-macsec-sa: $(SUPPLICANT_OBJ) build/macsec/test_macsec_sa.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+# The wolfMKA adapter driven through its own MkaSecyOps table; needs the
+# library, so it is only built when WOLFMKA_DIR is set.
+build/test-macsec-mka: $(SUPPLICANT_OBJ) build/macsec/test_macsec_mka.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
 
@@ -647,6 +661,9 @@ endif
 ifeq ($(WOLFIP_ENABLE_MACSEC),1)
 SUPPLICANT_TEST_BINS += build/test-macsec-crypto build/test-macsec-secy \
                         build/test-macsec-sa
+ifeq ($(WOLFIP_HAVE_WOLFMKA),1)
+SUPPLICANT_TEST_BINS += build/test-macsec-mka
+endif
 endif
 
 supplicant-tests: $(SUPPLICANT_TEST_BINS)
@@ -1228,7 +1245,8 @@ clean-test-wolfguard-interop:
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
         test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \
         clean-test-wolfguard-loopback \
-        test-wolfguard-interop clean-test-wolfguard-interop
+        test-wolfguard-interop clean-test-wolfguard-interop \
+        supplicant-tests supplicant-tests-sanitize macsec-fuzz
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml

@@ -47,6 +47,14 @@ extern "C" {
 #define MACSEC_SECTAG_MIN_LEN     8U    /* EtherType(2)+TCI/AN(1)+SL(1)+PN(4) */
 #define MACSEC_SECTAG_MAX_LEN     16U   /* + SCI(8) when the SC bit is set    */
 #define MACSEC_MIN_SECURE_DATA    48U   /* below this, SL carries the length  */
+#define MACSEC_ETH_ADDR_PAIR_LEN  12U   /* DA(6) + SA(6) ahead of the SecTAG  */
+
+/* macsec_validate() returns this, and only this, when the frame failed GCM
+ * authentication - a forged or tampered frame. Every other negative return is
+ * a malformed frame (BAD_FUNC_ARG) or a wolfCrypt backend error, so a caller
+ * can tell a forgery from an engine failure and not punish a peer for the
+ * latter. */
+#define MACSEC_ICV_FAIL           (-1)
 
 /* SecTAG TCI bit masks (the high 6 bits of the TCI/AN octet). */
 #define MACSEC_TCI_V              0x80U /* Version (always 0)                 */
@@ -116,7 +124,11 @@ int macsec_sectag_parse(const uint8_t *in, size_t in_len,
 /* Protect a user MSDU into a MACsec frame. payload starts at the original
  * EtherType (it becomes the first octets of the Secure Data). out receives
  * DA || SA || SecTAG || Secure Data || ICV; *out_len is set on success.
- * Returns 0 on success, negative wolfCrypt/arg error otherwise. */
+ *
+ * Short frames are not padded here: the SecTAG's SL field records the true
+ * Secure Data length and the MAC pads the frame to the 60-octet minimum after
+ * the ICV, which is what 802.1AE expects. Returns 0 on success, negative
+ * wolfCrypt/arg error otherwise. */
 int macsec_protect(const struct macsec_protect_params *p,
                    const uint8_t *payload, size_t payload_len,
                    uint8_t *out, size_t out_cap, size_t *out_len);
@@ -125,7 +137,13 @@ int macsec_protect(const struct macsec_protect_params *p,
  * Secure Data || ICV. On success the recovered user MSDU (starting at the
  * original EtherType) is written to out_payload, *out_payload_len set, the
  * decoded SecTAG returned via *out_tag (for PN / AN / replay handling by the
- * caller). Returns 0 on success, -1 on ICV failure, negative on arg error. */
+ * caller).
+ *
+ * The Secure Data length comes from the SecTAG's SL field when that is
+ * non-zero, so the padding a MAC adds to reach the 60-octet Ethernet minimum
+ * is not mistaken for user data. Returns 0 on success, MACSEC_ICV_FAIL on an
+ * authentication failure, BAD_FUNC_ARG on a malformed frame or bad argument,
+ * or the wolfCrypt error from the backend. */
 int macsec_validate(const struct macsec_validate_params *p,
                     const uint8_t *frame, size_t frame_len,
                     uint8_t *out_payload, size_t out_cap,

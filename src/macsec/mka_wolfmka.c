@@ -51,6 +51,18 @@ static int secy_create_rx_sc(void *ctx, const uint8_t sci[MKA_SCI_LEN])
     return 0;
 }
 
+/* Does a SAK about to be installed match the cipher suite in force?
+ *
+ * The suite fixes the key length, so a peer that negotiated GCM-AES-256 and a
+ * SecY quietly running GCM-AES-128 is a downgrade nobody would notice: the
+ * frames still authenticate, because the SAK length is what selects the AES
+ * key size in the transform. m->sak_len is 0 until set_cipher_suite runs,
+ * which means "whatever the Key Server distributes". */
+static int mka_sak_len_agrees(const struct mka_wolfmka *m, size_t sak_len)
+{
+    return (m->sak_len == 0 || m->sak_len == sak_len);
+}
+
 static int secy_install_tx_sa(void *ctx, const uint8_t sci[MKA_SCI_LEN],
                               uint8_t an, uint32_t kn, const uint8_t *sak,
                               size_t sak_len)
@@ -60,12 +72,17 @@ static int secy_install_tx_sa(void *ctx, const uint8_t sci[MKA_SCI_LEN],
     if (m->tx == NULL) {
         return -1;
     }
+    if (!mka_sak_len_agrees(m, sak_len)) {
+        return -1;
+    }
+    /* The key is installed but does not take the wire yet: wolfMKA moves
+     * transmit onto it with enable_transmit() once every live peer reports
+     * receiving on it, which is the make-before-break handover. */
     if (macsec_tx_sc_set_key(m->tx, sak, sak_len, sci, an, m->encrypt,
                              m->conf_offset, 1 /* include_sci */,
                              1 /* initial PN */) != 0) {
         return -1;
     }
-    m->installed = 1;               /* a SAK has been agreed and installed */
     return 0;
 }
 
@@ -78,45 +95,75 @@ static int secy_install_rx_sa(void *ctx, const uint8_t sci[MKA_SCI_LEN],
     if (m->rx == NULL) {
         return -1;
     }
+    if (!mka_sak_len_agrees(m, sak_len)) {
+        return -1;
+    }
     if (macsec_rx_sc_set_key(m->rx, sak, sak_len, sci, an,
-                             1 /* replay_protect */, 0 /* window */,
+                             m->replay_protect, m->replay_window,
                              m->conf_offset) != 0) {
         return -1;
     }
     return 0;
 }
 
+/* Move outbound protection onto (or off) the SA under an. This is what makes
+ * mka_wolfmka_installed() mean "the link is protected": wolfMKA holds the
+ * gate shut until every live peer has reported receiving on the key. */
 static int secy_enable_transmit(void *ctx, uint8_t an, bool enable)
 {
-    (void)ctx; (void)an; (void)enable;
-    return 0;               /* the software SecY protects once the key is set */
+    struct mka_wolfmka *m = (struct mka_wolfmka *)ctx;
+
+    if (m->tx == NULL) {
+        return -1;
+    }
+    /* Turning an SA off that is already gone is not a failure - the wire is
+     * off it either way - so only an enable has to find its SA. */
+    if (macsec_tx_sc_set_active(m->tx, an, enable ? 1U : 0U) != 0 && enable) {
+        return -1;
+    }
+    m->installed = m->tx->active ? 1U : 0U;
+    return 0;
 }
 
 static int secy_enable_receive(void *ctx, const uint8_t sci[MKA_SCI_LEN],
                                uint8_t an, bool enable)
 {
-    (void)ctx; (void)sci; (void)an; (void)enable;
+    struct mka_wolfmka *m = (struct mka_wolfmka *)ctx;
+    (void)sci;
+
+    if (m->rx == NULL) {
+        return -1;
+    }
+    if (macsec_rx_sc_enable_sa(m->rx, an, enable ? 1U : 0U) != 0 && enable) {
+        return -1;
+    }
     return 0;
 }
 
+/* Tear down one Secure Association. wolfMKA selects the direction with the
+ * SCI - NULL is the transmit SA, a peer SCI is that peer's receive SA (see
+ * MkaSecyOps.delete_sa) - and names the key by its Association Number.
+ *
+ * The AN matters: wolfMKA runs make-before-break with two keys live, Latest
+ * and Old, always on adjacent ANs. Retiring the Old key must not disturb the
+ * Latest key that is carrying traffic, so the delete is scoped to the SA
+ * holding that AN rather than scrubbing the whole channel. A delete for an AN
+ * this data plane does not hold is not an error - the SA is already gone. */
 static int secy_delete_sa(void *ctx, const uint8_t *sci, uint8_t an)
 {
     struct mka_wolfmka *m = (struct mka_wolfmka *)ctx;
-    (void)an;
-    /* Scrub the SAK as the SA is torn down so no key material survives in the
-     * caller-owned SC and a re-enable cannot reuse a stale key without a
-     * fresh install. */
+
     if (sci == NULL) {
         if (m->tx != NULL) {
-            wpa_secure_zero(m->tx->sak, sizeof(m->tx->sak));
-            m->tx->sak_len = 0;
-            m->tx->in_use = 0;
+            (void)macsec_tx_sc_delete_sa(m->tx, an);
+            /* Deleting the SA that was protecting leaves the link
+             * unprotected; say so rather than letting an integrator poll a
+             * stale flag and keep calling macsec_tx() on a dead channel. */
+            m->installed = m->tx->active ? 1U : 0U;
         }
     }
     else if (m->rx != NULL) {
-        wpa_secure_zero(m->rx->sak, sizeof(m->rx->sak));
-        m->rx->sak_len = 0;
-        m->rx->in_use = 0;
+        (void)macsec_rx_sc_delete_sa(m->rx, an);
     }
     return 0;
 }
@@ -124,11 +171,15 @@ static int secy_delete_sa(void *ctx, const uint8_t *sci, uint8_t an)
 static int secy_get_next_pn(void *ctx, uint8_t an, uint64_t *next_pn)
 {
     struct mka_wolfmka *m = (struct mka_wolfmka *)ctx;
-    (void)an;
+    uint32_t pn;
+
     if (m->tx == NULL || next_pn == NULL) {
         return -1;
     }
-    *next_pn = (uint64_t)m->tx->next_pn;
+    if (macsec_tx_sc_next_pn(m->tx, an, &pn) != 0) {
+        return -1;
+    }
+    *next_pn = (uint64_t)pn;
     return 0;
 }
 
@@ -136,14 +187,19 @@ static int secy_set_lowest_pn(void *ctx, const uint8_t sci[MKA_SCI_LEN],
                               uint8_t an, uint64_t lowest_pn)
 {
     struct mka_wolfmka *m = (struct mka_wolfmka *)ctx;
-    (void)sci; (void)an;
+    (void)sci;
+
     if (m->rx == NULL) {
         return -1;
     }
-    if (lowest_pn > m->rx->lowest_pn) {
-        m->rx->lowest_pn = (uint32_t)lowest_pn;
+    /* This data plane is 32-bit PN only (XPN is out of scope), so refuse a
+     * value that does not fit rather than truncating it into a window that
+     * would then accept frames it should reject. */
+    if (lowest_pn > (uint64_t)MACSEC_PN_MAX) {
+        return -1;
     }
-    return 0;
+    return (macsec_rx_sc_set_lowest_pn(m->rx, an, (uint32_t)lowest_pn) == 0)
+               ? 0 : -1;
 }
 
 static int secy_set_cipher_suite(void *ctx, const uint8_t sci[MKA_SCI_LEN],
@@ -151,7 +207,22 @@ static int secy_set_cipher_suite(void *ctx, const uint8_t sci[MKA_SCI_LEN],
                                  uint8_t confidentiality_offset)
 {
     struct mka_wolfmka *m = (struct mka_wolfmka *)ctx;
-    (void)sci; (void)cipher_suite; (void)ssci;
+    (void)sci; (void)ssci;
+
+    /* Record the key length the negotiated suite implies so a SAK of the
+     * wrong size is refused at install time (see mka_sak_len_agrees). The XPN
+     * suites need 64-bit packet numbers, which this data plane does not
+     * implement, so decline them rather than run them as their 32-bit
+     * namesakes. */
+    if (cipher_suite == 0 || cipher_suite == MKA_CIPHER_GCM_AES_128) {
+        m->sak_len = MACSEC_KEY_LEN_128;
+    }
+    else if (cipher_suite == MKA_CIPHER_GCM_AES_256) {
+        m->sak_len = MACSEC_KEY_LEN_256;
+    }
+    else {
+        return -1;
+    }
 
     if (confidentiality_offset == MKA_CONF_OFFSET_NONE) {
         m->encrypt = 0;             /* integrity only */
@@ -229,7 +300,10 @@ static const uint8_t MKA_PAE_GROUP[6] = { 0x01, 0x80, 0xC2, 0x00, 0x00, 0x03 };
 static int mka_wolfmka_send(void *ctx, const uint8_t *pdu, size_t len)
 {
     struct mka_wolfmka *m = (struct mka_wolfmka *)ctx;
-    uint8_t frame[1600];
+    /* Sized from wolfMKA's own MKPDU ceiling (itself derived from
+     * MKA_MAX_PEERS) so raising the peer count cannot silently outgrow this
+     * buffer and stop the participant transmitting. */
+    uint8_t frame[MKA_L2_HDR_LEN + MKA_MKPDU_MAX_LEN];
 
     if (m->send == NULL || (MKA_L2_HDR_LEN + len) > sizeof(frame)) {
         return -1;
@@ -253,14 +327,23 @@ int mka_wolfmka_init_psk(struct mka_wolfmka *m,
                          struct macsec_tx_sc *tx, struct macsec_rx_sc *rx)
 {
     MkaParticipantConfig cfg;
+    int                  ret;
 
     if (m == NULL || cak == NULL || ckn == NULL || sci == NULL) {
         return -1;
     }
-    if (cak_len > MKA_MAX_CAK_LEN || ckn_len == 0 || ckn_len > MKA_MAX_CKN_LEN) {
+    /* A CAK is 128 or 256 bits (802.1X-2010 6.2.1). Checking only the upper
+     * bound would let a truncated key through to be copied into a fixed-size
+     * buffer and used to derive the KEK and ICK from partly uninitialised
+     * material; fail at the API edge rather than rely on the library to
+     * reject it downstream. */
+    if (cak_len != MACSEC_KEY_LEN_128 && cak_len != MACSEC_KEY_LEN_256) {
         return -1;
     }
-    if (sak_len != 16 && sak_len != 32) {
+    if (ckn_len == 0 || ckn_len > MKA_MAX_CKN_LEN) {
+        return -1;
+    }
+    if (sak_len != MACSEC_KEY_LEN_128 && sak_len != MACSEC_KEY_LEN_256) {
         return -1;
     }
 
@@ -269,13 +352,30 @@ int mka_wolfmka_init_psk(struct mka_wolfmka *m,
     m->send_ctx = send_ctx;
     m->tx       = tx;
     m->rx       = rx;
+    /* The channels are caller-owned storage but this participant is what
+     * programs them, so start them from a known state rather than trusting
+     * whatever the integrator's struct happened to hold. */
+    macsec_tx_sc_init(tx);
+    macsec_rx_sc_init(rx);
     memcpy(m->src_mac, sci, 6);      /* L2 source address for outbound frames */
     m->encrypt  = 1;                 /* default; refined by set_cipher_suite */
     m->conf_offset = 0;
+    m->sak_len  = 0;                 /* set by set_cipher_suite */
+    /* Strict ordering by default: correct on a point-to-point link and the
+     * safest starting point. mka_wolfmka_set_replay() widens it for a path
+     * that reorders (a multi-queue NIC, a switch hashing per flow). */
+    m->replay_protect = 1;
+    m->replay_window  = 0;
 
+    /* Both workspaces are mandatory. The RNG is not optional decoration: MKA
+     * draws the Member Identifier, the Key Server nonce and - when this
+     * participant is elected - the SAK itself from it. Note the default
+     * WOLFMKA_RANDOM_POOL_SIZE (and CMAC pool) is 1, so a second participant
+     * in one process needs the pool raised at build time; that shows up here
+     * as a NULL rather than as weak key material later. */
     m->rng  = wm_Crypto_RandomInit();
     m->cmac = wm_Crypto_CmacInit();
-    if (m->cmac == NULL) {           /* CMAC workspace is mandatory */
+    if (m->rng == NULL || m->cmac == NULL) {
         mka_wolfmka_free(m);
         return -1;
     }
@@ -303,10 +403,24 @@ int mka_wolfmka_init_psk(struct mka_wolfmka *m,
     mka_wolfmka_event_ops(&cfg.events, m);
 #endif
 
-    if (wm_Participant_Init(&m->p, &cfg) != MKA_OK) {
+    ret = (wm_Participant_Init(&m->p, &cfg) == MKA_OK) ? 0 : -1;
+    /* cfg carries a plaintext copy of the CAK; wm_Participant_Init has taken
+     * its own copy by now, so do not leave ours on the stack. */
+    wpa_secure_zero(&cfg, sizeof(cfg));
+    if (ret != 0) {
         mka_wolfmka_free(m);
+    }
+    return ret;
+}
+
+int mka_wolfmka_set_replay(struct mka_wolfmka *m, uint8_t replay_protect,
+                           uint32_t window)
+{
+    if (m == NULL) {
         return -1;
     }
+    m->replay_protect = replay_protect ? 1U : 0U;
+    m->replay_window  = window;
     return 0;
 }
 

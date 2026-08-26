@@ -225,6 +225,38 @@ static int test_sak_generation(void)
     return fails;
 }
 
+
+/* A CKN is an arbitrary 1..32-octet name (802.1X-2010 6.2.2), which is what
+ * the header documents. Odd lengths are legal: the KDF only needs the output
+ * to be a whole number of octets. */
+static int test_ckn_lengths(void)
+{
+    static const uint8_t msk[32] = {
+        0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+        0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+        0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+        0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
+    };
+    static const uint8_t sid[8] = { 1,2,3,4,5,6,7,8 };
+    static const uint8_t peer[6] = { 0x02,0,0,0,0,0xaa };
+    static const uint8_t auth[6] = { 0x02,0,0,0,0,0xbb };
+    uint8_t ckn[32];
+    int     fails = 0;
+
+    printf("Test 7: CKN lengths (1..32, odd included)\n");
+    fails += expect_true(macsec_derive_ckn(msk, sizeof(msk), sid, sizeof(sid),
+                         peer, auth, ckn, 1) == 0, "1-octet CKN accepted");
+    fails += expect_true(macsec_derive_ckn(msk, sizeof(msk), sid, sizeof(sid),
+                         peer, auth, ckn, 31) == 0, "31-octet CKN accepted");
+    fails += expect_true(macsec_derive_ckn(msk, sizeof(msk), sid, sizeof(sid),
+                         peer, auth, ckn, 32) == 0, "32-octet CKN accepted");
+    fails += expect_true(macsec_derive_ckn(msk, sizeof(msk), sid, sizeof(sid),
+                         peer, auth, ckn, 0) != 0, "0-octet CKN rejected");
+    fails += expect_true(macsec_derive_ckn(msk, sizeof(msk), sid, sizeof(sid),
+                         peer, auth, ckn, 33) != 0, "33-octet CKN rejected");
+    return fails;
+}
+
 int main(void)
 {
     int fails = 0;
@@ -236,6 +268,7 @@ int main(void)
     fails += test_kek_ick();
     fails += test_mkpdu_icv();
     fails += test_sak_generation();
+    fails += test_ckn_lengths();
 
     printf("\n%s: macsec_crypto (%d failure%s)\n",
            fails == 0 ? "PASS" : "FAIL", fails, fails == 1 ? "" : "s");

@@ -30,7 +30,7 @@
 #include <wolfssl/wolfcrypt/cmac.h>
 
 #ifndef WOLFSSL_CMAC
-#error "wolfIP MACsec requires wolfSSL built with WOLFSSL_CMAC (--enable-cmac)"
+#error "wolfIP MACsec requires wolfSSL built with WOLFSSL_CMAC (./configure --enable-cmac)"
 #endif
 
 /* AES-CMAC output block size (bits and bytes). The KDF counter mode of
@@ -214,8 +214,11 @@ int macsec_derive_ckn(const uint8_t *msk, size_t msk_len,
         || auth_mac == NULL || ckn == NULL) {
         return BAD_FUNC_ARG;
     }
+    /* A CKN is an arbitrary 1..32-octet name (802.1X-2010 6.2.2), and the KDF
+     * only needs the output length to be a whole number of octets, so any
+     * length in range is legal - odd ones included. */
     if (ckn_len == 0 || ckn_len > MACSEC_CKN_MAX_LEN
-        || (ckn_len & 0x1U) != 0 || msk_len < MACSEC_KEY_LEN_128) {
+        || msk_len < MACSEC_KEY_LEN_128) {
         return BAD_FUNC_ARG;
     }
     /* KDK is a 128-bit key: the leftmost 16 bytes of the MSK. */

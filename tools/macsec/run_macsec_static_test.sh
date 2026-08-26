@@ -153,6 +153,38 @@ else
     ip -n "$NS_K" -s macsec show 2>/dev/null | sed 's/^/    /'
 fi
 
+# ---- Direction 3: wolfIP -> kernel, short frame with MAC padding ----
+# Secure Data under 48 octets makes the SecTAG's SL field carry the true
+# length, and a frame under 60 octets gets padded by the MAC after the ICV.
+# A receiver that measures Secure Data from the frame length instead of SL
+# looks for the ICV past its real position and drops the frame, so this is
+# the case Direction 2 (a 22-octet payload, 66-octet frame) never reaches.
+log "protecting a short frame with wolfIP and injecting it padded..."
+SHORT_PAYLOAD="0800450000080001"                   # 8 octets of Secure Data
+SFRAME=$("$PROBE" protect "$SAK" "$WOLF_SCI" 0 2 1 0 "$DA_HEX" "$WOLF_MAC" "$SHORT_PAYLOAD")
+
+BEFORE=$(macsec_inpktsok)
+ip netns exec "$NS_W" python3 - "$VETH_W" "$SFRAME" <<'PY' 2>/dev/null
+import socket, sys
+frame = bytearray.fromhex(sys.argv[2])
+# What an Ethernet MAC does to a runt: pad to the 60-octet minimum, after
+# the ICV. The pad is not covered by the ICV; SL is what delimits the data.
+if len(frame) < 60:
+    frame += b'\x00' * (60 - len(frame))
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind((sys.argv[1], 0))
+s.send(bytes(frame))
+PY
+sleep 0.5
+AFTER=$(macsec_inpktsok)
+if [ "$AFTER" -gt "$BEFORE" ]; then
+    ok "kernel accepted a padded short wolfIP frame (InPktsOK $BEFORE -> $AFTER)"
+else
+    bad "kernel rejected the padded short frame (InPktsOK $BEFORE -> $AFTER)"
+    log "diagnostic: kernel RXSC stats:"
+    ip -n "$NS_K" -s macsec show 2>/dev/null | sed 's/^/    /'
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: macsec static interop ($PASS checks)"

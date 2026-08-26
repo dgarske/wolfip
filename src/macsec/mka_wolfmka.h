@@ -59,10 +59,14 @@ struct mka_wolfmka {
     struct macsec_rx_sc *rx;      /* software SecY receive channel    */
     mka_wolfmka_send_fn  send;
     void                *send_ctx;
-    uint8_t              src_mac[6];    /* our MAC (SCI[0:6]) for the L2 header */
     size_t               conf_offset;  /* 0/30/50 octets, from set_cipher_suite */
+    size_t               sak_len;   /* key length the cipher suite implies, or
+                                     * 0 before set_cipher_suite runs      */
+    uint32_t             replay_window; /* frames of reorder tolerated      */
+    uint8_t              src_mac[6];    /* our MAC (SCI[0:6]) for the L2 header */
     uint8_t              encrypt;       /* 0 = integrity only               */
-    uint8_t              installed;     /* a transmit SA has been enabled    */
+    uint8_t              replay_protect;
+    uint8_t              installed;     /* a transmit SA is protecting       */
 };
 
 /* Initialise with a pre-shared CAK/CKN. sci is our Secure Channel Identifier
@@ -76,6 +80,19 @@ int mka_wolfmka_init_psk(struct mka_wolfmka *m,
                          const uint8_t sci[8], uint8_t priority,
                          uint8_t key_server_capable, size_t sak_len,
                          struct macsec_tx_sc *tx, struct macsec_rx_sc *rx);
+
+/* Set the receive replay policy. 802.1AE treats the replay window as a
+ * managed object, so it is configurable rather than fixed: the default is
+ * strict monotonic ordering (protect on, window 0), which is right for a
+ * point-to-point link but drops every out-of-order frame on a path that
+ * reorders - a multi-queue NIC, a switch hashing per flow, a bridged path.
+ * window is the number of frames of reorder tolerated below the highest
+ * accepted packet number. Note the window is a sliding low-water mark rather
+ * than a bitmap, so a duplicate inside a non-zero window is accepted (802.1AE
+ * permits this). Call before the CA converges; it applies to SAs installed
+ * from then on. Returns 0 on success. */
+int mka_wolfmka_set_replay(struct mka_wolfmka *m, uint8_t replay_protect,
+                           uint32_t window);
 
 /* Initialise from an EAP-TLS MSK. Derives the CAK and CKN (802.1X-2010 9.3.1)
  * from the MSK, the two peer MAC addresses, and the EAP Session-Id using

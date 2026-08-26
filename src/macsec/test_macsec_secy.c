@@ -18,8 +18,11 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "supplicant_features.h"   /* wolfSSL options, before any wolfcrypt */
 #include "macsec_secy.h"
 #include "macsec_test.h"
+
+#include <wolfssl/wolfcrypt/error-crypt.h>
 
 static const uint8_t g_da[6]  = { 0x01,0x80,0xc2,0x00,0x00,0x03 };
 static const uint8_t g_sa[6]  = { 0x02,0x00,0x00,0x00,0x00,0x22 };
@@ -220,6 +223,77 @@ static int test_tamper(void)
     return fails;
 }
 
+/* Short Secure Data: the Ethernet MAC pads a frame under 60 octets, and the
+ * padding lands after the ICV. The SecTAG's SL field is what says where the
+ * Secure Data really ends, so a receiver that measures it from the frame
+ * length instead would look for the ICV past its true position and fail every
+ * short frame. Reachable with integrity-only control traffic or any short
+ * non-IP L2 protocol. */
+static int test_short_frame_padding(void)
+{
+    struct macsec_protect_params  pp;
+    struct macsec_validate_params vp;
+    struct macsec_sectag          tag;
+    uint8_t payload[8];
+    uint8_t frame[128];
+    uint8_t padded[128];
+    uint8_t recovered[128];
+    size_t  frame_len = 0;
+    size_t  rec_len = 0;
+    size_t  padded_len;
+    int     fails = 0;
+
+    printf("Test 5: short Secure Data (SL) and MAC padding\n");
+    fill_payload(payload, sizeof(payload), 0x40);
+
+    base_protect_params(&pp, g_sak128, sizeof(g_sak128), 1, 0, 1);
+    fails += expect_true(macsec_protect(&pp, payload, sizeof(payload), frame,
+                         sizeof(frame), &frame_len) == 0, "short frame built");
+    /* SecTAG(16) + SecureData(8) + ICV(16) = 40 after DA/SA, so SL must be
+     * set and the frame is under the 60-octet Ethernet minimum. */
+    fails += expect_true(frame[12 + 3] == (uint8_t)sizeof(payload),
+                         "SL carries the true Secure Data length");
+    fails += expect_true(frame_len < 60, "frame is short enough to be padded");
+
+    memset(&vp, 0, sizeof(vp));
+    vp.sak = g_sak128; vp.sak_len = sizeof(g_sak128);
+    vp.sci = g_sci;    vp.conf_offset = 0;
+
+    fails += expect_true(macsec_validate(&vp, frame, frame_len, recovered,
+                         sizeof(recovered), &rec_len, &tag) == 0
+                         && rec_len == sizeof(payload),
+                         "unpadded short frame validates");
+
+    /* Now what a real MAC hands us: the same frame padded out to 60 octets. */
+    memcpy(padded, frame, frame_len);
+    memset(padded + frame_len, 0xAB, 60 - frame_len);
+    padded_len = 60;
+    rec_len = 0;
+    fails += expect_true(macsec_validate(&vp, padded, padded_len, recovered,
+                         sizeof(recovered), &rec_len, &tag) == 0
+                         && rec_len == sizeof(payload),
+                         "padded short frame validates, pad not user data");
+    fails += hex_eq(recovered, payload, sizeof(payload),
+                    "payload recovered from the padded frame");
+
+    /* An SL of 48 or more is malformed: SL is 0 whenever Secure Data fills
+     * the minimum, so the two encodings must not overlap. */
+    memcpy(padded, frame, frame_len);
+    padded[12 + 3] = 48;
+    fails += expect_true(macsec_validate(&vp, padded, frame_len, recovered,
+                         sizeof(recovered), &rec_len, &tag) == BAD_FUNC_ARG,
+                         "SL >= 48 rejected as malformed");
+
+    /* SL is inside the AAD, so a plausible but wrong one fails the ICV rather
+     * than silently truncating the recovered MSDU. */
+    memcpy(padded, frame, frame_len);
+    padded[12 + 3] = (uint8_t)(sizeof(payload) - 1U);
+    fails += expect_true(macsec_validate(&vp, padded, frame_len, recovered,
+                         sizeof(recovered), &rec_len, &tag) == MACSEC_ICV_FAIL,
+                         "tampered SL fails authentication");
+    return fails;
+}
+
 int main(void)
 {
     int fails = 0;
@@ -229,6 +303,7 @@ int main(void)
     fails += test_roundtrips();
     fails += test_onwire_semantics();
     fails += test_tamper();
+    fails += test_short_frame_padding();
 
     printf("\n%s: macsec_secy (%d failure%s)\n",
            fails == 0 ? "PASS" : "FAIL", fails, fails == 1 ? "" : "s");
