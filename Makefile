@@ -428,6 +428,16 @@ ifeq ($(WOLFSSL_CFLAGS),)
 WOLFSSL_CFLAGS:=$(shell pkg-config --cflags wolfssl 2>/dev/null)
 endif
 
+# Every target that touches wolfSSL headers needs these, not just the ones
+# that name WOLFSSL_CFLAGS explicitly. Without this, a build with
+# WOLFSSL_PREFIX set compiles the ESP/HTTP/unit targets against the *system*
+# wolfSSL headers while linking the prefix library (or the reverse), which
+# fails at link time on any symbol the two versions disagree about - and if
+# it happens to link, the mismatch is far harder to spot than a link error.
+# Empty when neither WOLFSSL_PREFIX nor pkg-config supplies anything, so the
+# default system build is unchanged.
+CFLAGS += $(WOLFSSL_CFLAGS)
+
 build/test-wpa-crypto: $(SUPPLICANT_OBJ) build/supplicant/test_wpa_crypto.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
@@ -816,11 +826,11 @@ build/test-wolfssl-forwarding:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP 
 
 build/test-wolfssl: $(OBJ) build/test/test_native_wolfssl.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
 
 build/ipfilter-logger: $(IPFILTER_OBJ) build/test/ipfilter_logger.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
 
 build/ipfilter/wolfip.o: src/wolfip.c
 	@mkdir -p `dirname $@` || true
@@ -836,24 +846,26 @@ build/esp/wolfip.o: src/wolfip.c
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
 
 build/test/test_esp.o: src/test/esp/test_esp.c
+	@mkdir -p `dirname $@` || true
 	@echo "[CC] $@"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
 
 build/test-esp: $(ESP_OBJ) build/test/test_esp.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(WOLFSSL_LIBS) $(END_GROUP)
 
 build/test/esp_server.o: src/test/esp/esp_server.c
+	@mkdir -p `dirname $@` || true
 	@echo "[CC] $@"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
 
 build/esp-server: $(ESP_OBJ) build/port/posix/bsd_socket.o build/test/esp_server.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(WOLFSSL_LIBS) $(END_GROUP)
 
 build/test-wolfssl-forwarding: build/test/test_wolfssl_forwarding.o build/test/wolfip_forwarding.o $(WOLFIP_TFTP_OBJ) $(TAP_OBJ) build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
 
 build/test/test_wolfssl_forwarding.o: CFLAGS+=-DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1
 
@@ -869,7 +881,7 @@ build/test-ttl-expired: build/test/test_ttl_expired.o build/test/wolfip_forwardi
 
 build/test-httpd: $(OBJ) build/test/test_httpd.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/server_cert.o build/http/httpd.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
 
 # Standalone regression test for HTTP request framing (F-5259). It #includes
 # httpd.c directly to reach the static parser and stubs the wolfIP/wolfSSL I/O.
@@ -877,14 +889,14 @@ build/test-http-smuggle:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -DWOLF
 build/test-http-smuggle: src/test/test_http_smuggle.c src/http/httpd.c
 	@mkdir -p build || true
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) -o $@ src/test/test_http_smuggle.c $(LDFLAGS) -lwolfssl
+	@$(CC) $(CFLAGS) -o $@ src/test/test_http_smuggle.c $(LDFLAGS) $(WOLFSSL_LIBS)
 
 # Standalone regression test for the httpd_get_request_arg OOB read (F-5258).
 build/test-http-arg-oob:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -DWOLFIP_ENABLE_HTTP -Isrc/http
 build/test-http-arg-oob: src/test/test_http_arg_oob.c src/http/httpd.c
 	@mkdir -p build || true
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) -o $@ src/test/test_http_arg_oob.c $(LDFLAGS) -lwolfssl
+	@$(CC) $(CFLAGS) -o $@ src/test/test_http_arg_oob.c $(LDFLAGS) $(WOLFSSL_LIBS)
 
 # Standalone regression test for header accumulation in parse_http_request
 # every header line must be reachable through struct http_request.headers.
@@ -892,7 +904,7 @@ build/test-http-headers:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -DWOLF
 build/test-http-headers: src/test/test_http_headers.c src/http/httpd.c
 	@mkdir -p build || true
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) -o $@ src/test/test_http_headers.c $(LDFLAGS) -lwolfssl
+	@$(CC) $(CFLAGS) -o $@ src/test/test_http_headers.c $(LDFLAGS) $(WOLFSSL_LIBS)
 
 # Standalone regression test for TLS close_notify on every close path (F-5732).
 # It #includes httpd.c directly and stubs the wolfSSL teardown calls to record
@@ -1006,7 +1018,7 @@ build/test/unit-esp: src/test/unit/unit_esp.c
 		-c src/test/unit/unit_esp.c -o build/test/unit_esp.o
 	@echo "[LD] $@"
 	@$(CC) build/test/unit_esp.o -o $@ \
-		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) -lwolfssl
+		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) $(WOLFSSL_LIBS)
 
 # Unit tests with sanitizers
 # Force clean rebuild to ensure sanitizer flags are applied
@@ -1186,7 +1198,7 @@ build/test/unit-wolfguard: src/test/unit/unit_wolfguard.c
 		-c src/test/unit/unit_wolfguard.c -o build/test/unit_wolfguard.o
 	@echo "[LD] $@"
 	@$(CC) build/test/unit_wolfguard.o -o $@ \
-		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) -lwolfssl
+		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) $(WOLFSSL_LIBS)
 
 clean-unit-wolfguard:
 	@rm -f build/test/unit-wolfguard build/test/unit_wolfguard.o
@@ -1209,7 +1221,7 @@ build/test/test-wolfguard-loopback: src/test/test_wolfguard_loopback.c
 		-c src/test/test_wolfguard_loopback.c -o build/test/test_wolfguard_loopback.o
 	@echo "[LD] $@"
 	@$(CC) build/test/test_wolfguard_loopback.o -o $@ \
-		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) -lwolfssl
+		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) $(WOLFSSL_LIBS)
 
 clean-test-wolfguard-loopback:
 	@rm -f build/test/test-wolfguard-loopback build/test/test_wolfguard_loopback.o
@@ -1235,7 +1247,7 @@ build/test/test-wolfguard-interop: src/test/test_wolfguard_interop.c src/port/po
 		-c src/port/posix/linux_tun.c -o build/test/linux_tun.o
 	@echo "[LD] $@"
 	@$(CC) build/test/test_wolfguard_interop.o build/test/linux_tun.o -o $@ \
-		$(LDFLAGS) -lwolfssl
+		$(LDFLAGS) $(WOLFSSL_LIBS)
 
 clean-test-wolfguard-interop:
 	@rm -f build/test/test-wolfguard-interop build/test/test_wolfguard_interop.o build/test/linux_tun.o

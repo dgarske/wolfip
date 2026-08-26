@@ -191,6 +191,12 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 #define DEFAULT_WINDOW_SZ (4 * 1024)   /* Reduced from 16KB to 4KB */
 #define DEFAULT_HIGHWATER_MARK ((DEFAULT_WINDOW_SZ * 3) / 4)
 #define MAX_PACKET_SZ (DEFAULT_WINDOW_SZ + 256)
+/* The advertised channel packet size has to shrink with MAX_PACKET_SZ above,
+ * not stay at the wolfSSH default of 32 KB: it is what this end tells the peer
+ * it can receive, and a packet that size could not be framed inside a 4 KB+256
+ * wire limit. The 256 octets of headroom cover the transport framing, channel
+ * header, padding and MAC (wolfSSH budgets at most 101). */
+#define DEFAULT_MAX_PACKET_SZ DEFAULT_WINDOW_SZ
 
 /* Custom I/O - we use wolfIP sockets */
 #define WOLFSSH_USER_IO

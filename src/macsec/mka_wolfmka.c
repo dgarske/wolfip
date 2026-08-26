@@ -145,9 +145,9 @@ static int secy_enable_receive(void *ctx, const uint8_t sci[MKA_SCI_LEN],
  * MkaSecyOps.delete_sa) - and names the key by its Association Number.
  *
  * The AN matters: wolfMKA runs make-before-break with two keys live, Latest
- * and Old, always on adjacent ANs. Retiring the Old key must not disturb the
- * Latest key that is carrying traffic, so the delete is scoped to the SA
- * holding that AN rather than scrubbing the whole channel. A delete for an AN
+ * and Old, on adjacent Association Numbers. Retiring the Old key must not
+ * disturb the Latest key that is carrying traffic, so the delete is scoped to
+ * the SA holding that AN rather than scrubbing the whole channel. A delete for an AN
  * this data plane does not hold is not an error - the SA is already gone. */
 static int secy_delete_sa(void *ctx, const uint8_t *sci, uint8_t an)
 {
