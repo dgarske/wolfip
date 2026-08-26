@@ -153,34 +153,44 @@ else
     ip -n "$NS_K" -s macsec show 2>/dev/null | sed 's/^/    /'
 fi
 
-# ---- Direction 3: wolfIP -> kernel, short frame with MAC padding ----
+# ---- Direction 3: wolfIP -> kernel, short frame (SecTAG SL field) ----
 # Secure Data under 48 octets makes the SecTAG's SL field carry the true
-# length, and a frame under 60 octets gets padded by the MAC after the ICV.
-# A receiver that measures Secure Data from the frame length instead of SL
-# looks for the ICV past its real position and drops the frame, so this is
-# the case Direction 2 (a 22-octet payload, 66-octet frame) never reaches.
-log "protecting a short frame with wolfIP and injecting it padded..."
+# length. This is the case Direction 2 never reaches: its 22-octet payload
+# yields a 66-octet frame with SL = 0.
+#
+# The kernel is an exact oracle for the SL value here. macsec_validate_skb()
+# in drivers/net/macsec.c does, for a frame with SL set:
+#
+#     len = skb->len - 2 * ETH_ALEN;
+#     extra_len = macsec_extra_len(sci_present) + icv_len;   /* 16 + 16 */
+#     if (h->short_length)
+#             return len == extra_len + h->short_length;
+#
+# so an SL that disagrees with the frame length by even one octet is counted
+# as InPktsBadTag and dropped. Note the equality: Linux accepts no trailing
+# padding after the ICV, so the frame is injected exactly as wolfIP built it.
+# wolfIP's own receive path is more permissive - it takes the Secure Data
+# length from SL and ignores anything past the ICV, so a MAC that does pad
+# short frames cannot break it - but that tolerance is not something the
+# kernel shares and so is covered by the unit tests, not here.
+log "protecting a short frame with wolfIP and injecting it..."
 SHORT_PAYLOAD="0800450000080001"                   # 8 octets of Secure Data
 SFRAME=$("$PROBE" protect "$SAK" "$WOLF_SCI" 0 2 1 0 "$DA_HEX" "$WOLF_MAC" "$SHORT_PAYLOAD")
 
 BEFORE=$(macsec_inpktsok)
 ip netns exec "$NS_W" python3 - "$VETH_W" "$SFRAME" <<'PY' 2>/dev/null
 import socket, sys
-frame = bytearray.fromhex(sys.argv[2])
-# What an Ethernet MAC does to a runt: pad to the 60-octet minimum, after
-# the ICV. The pad is not covered by the ICV; SL is what delimits the data.
-if len(frame) < 60:
-    frame += b'\x00' * (60 - len(frame))
 s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
 s.bind((sys.argv[1], 0))
-s.send(bytes(frame))
+s.send(bytes.fromhex(sys.argv[2]))
 PY
 sleep 0.5
 AFTER=$(macsec_inpktsok)
 if [ "$AFTER" -gt "$BEFORE" ]; then
-    ok "kernel accepted a padded short wolfIP frame (InPktsOK $BEFORE -> $AFTER)"
+    ok "kernel accepted a short wolfIP frame, SL matches (InPktsOK $BEFORE -> $AFTER)"
 else
-    bad "kernel rejected the padded short frame (InPktsOK $BEFORE -> $AFTER)"
+    bad "kernel rejected the short frame (InPktsOK $BEFORE -> $AFTER)"
+    log "an InPktsBadTag bump here means the SecTAG SL field is wrong"
     log "diagnostic: kernel RXSC stats:"
     ip -n "$NS_K" -s macsec show 2>/dev/null | sed 's/^/    /'
 fi

@@ -278,11 +278,21 @@ int macsec_validate(const struct macsec_validate_params *p,
         return BAD_FUNC_ARG;
     }
     /* Secure Data length: the SecTAG's SL field when set, else whatever is
-     * left of the frame. SL exists because the MAC pads a short frame to the
-     * 60-octet Ethernet minimum *after* the ICV; deriving the length from
-     * frame_len alone would count that padding as Secure Data and look for
-     * the ICV past its real position, so every short frame would fail to
-     * authenticate. SL is inside the AAD, so a tampered one fails the ICV. */
+     * left of the frame.
+     *
+     * Taking it from frame_len alone works only while nothing follows the
+     * ICV. That holds for a frame straight off a peer's SecY, but not for one
+     * a MAC has padded up to the 60-octet Ethernet minimum: the pad lands
+     * after the ICV, gets counted as Secure Data, and the ICV is then sought
+     * past its real position, so the frame fails to authenticate. Honouring
+     * SL makes the length explicit and the padding irrelevant.
+     *
+     * Note this is deliberately more permissive than Linux, whose
+     * macsec_validate_skb() requires len == extra_len + SL exactly and drops
+     * a padded short frame as InPktsBadTag. wolfIP sits directly on MACs it
+     * does not control, so tolerating the pad is the safer side to err on;
+     * it costs nothing, since SL is inside the AAD and a tampered one fails
+     * the ICV anyway. wolfIP does not generate padding itself. */
     if (tag.sl != 0U) {
         if (tag.sl >= MACSEC_MIN_SECURE_DATA) {
             return BAD_FUNC_ARG;    /* SL is 0 whenever Secure Data >= 48 */

@@ -223,12 +223,16 @@ static int test_tamper(void)
     return fails;
 }
 
-/* Short Secure Data: the Ethernet MAC pads a frame under 60 octets, and the
- * padding lands after the ICV. The SecTAG's SL field is what says where the
- * Secure Data really ends, so a receiver that measures it from the frame
- * length instead would look for the ICV past its true position and fail every
- * short frame. Reachable with integrity-only control traffic or any short
- * non-IP L2 protocol. */
+/* Short Secure Data. Under 48 octets the SecTAG's SL field carries the true
+ * length, which is what says where the Secure Data ends once an Ethernet MAC
+ * has padded the frame up to the 60-octet minimum: the pad lands after the
+ * ICV, so a receiver measuring from the frame length would look for the ICV
+ * past its true position. Reachable with integrity-only control traffic or
+ * any short non-IP L2 protocol.
+ *
+ * The padded case is a wolfIP-side tolerance and lives here rather than in
+ * the kernel interop script, because Linux requires the frame length to match
+ * SL exactly and drops a padded one. */
 static int test_short_frame_padding(void)
 {
     struct macsec_protect_params  pp;
@@ -272,7 +276,7 @@ static int test_short_frame_padding(void)
     fails += expect_true(macsec_validate(&vp, padded, padded_len, recovered,
                          sizeof(recovered), &rec_len, &tag) == 0
                          && rec_len == sizeof(payload),
-                         "padded short frame validates, pad not user data");
+                         "padded short frame validates, pad is not user data");
     fails += hex_eq(recovered, payload, sizeof(payload),
                     "payload recovered from the padded frame");
 

@@ -125,10 +125,10 @@ int macsec_sectag_parse(const uint8_t *in, size_t in_len,
  * EtherType (it becomes the first octets of the Secure Data). out receives
  * DA || SA || SecTAG || Secure Data || ICV; *out_len is set on success.
  *
- * Short frames are not padded here: the SecTAG's SL field records the true
- * Secure Data length and the MAC pads the frame to the 60-octet minimum after
- * the ICV, which is what 802.1AE expects. Returns 0 on success, negative
- * wolfCrypt/arg error otherwise. */
+ * Short frames are not padded here, matching the Linux MACsec module: the
+ * SecTAG's SL field records the true Secure Data length and any padding to
+ * the 60-octet Ethernet minimum is left to the MAC. Returns 0 on success,
+ * negative wolfCrypt/arg error otherwise. */
 int macsec_protect(const struct macsec_protect_params *p,
                    const uint8_t *payload, size_t payload_len,
                    uint8_t *out, size_t out_cap, size_t *out_len);
@@ -140,10 +140,12 @@ int macsec_protect(const struct macsec_protect_params *p,
  * caller).
  *
  * The Secure Data length comes from the SecTAG's SL field when that is
- * non-zero, so the padding a MAC adds to reach the 60-octet Ethernet minimum
- * is not mistaken for user data. Returns 0 on success, MACSEC_ICV_FAIL on an
- * authentication failure, BAD_FUNC_ARG on a malformed frame or bad argument,
- * or the wolfCrypt error from the backend. */
+ * non-zero, so padding a MAC added to reach the 60-octet Ethernet minimum is
+ * not mistaken for user data and the ICV is found where it really is. Octets
+ * past the ICV are ignored (they are outside its coverage by design); Linux
+ * is stricter here and rejects them. Returns 0 on success, MACSEC_ICV_FAIL on
+ * an authentication failure, BAD_FUNC_ARG on a malformed frame or bad
+ * argument, or the wolfCrypt error from the backend. */
 int macsec_validate(const struct macsec_validate_params *p,
                     const uint8_t *frame, size_t frame_len,
                     uint8_t *out_payload, size_t out_cap,
